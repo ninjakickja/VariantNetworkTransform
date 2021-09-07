@@ -127,7 +127,6 @@ namespace VNT
         Func<NTSnapshot, NTSnapshot, double, NTSnapshot> Interpolate = NTSnapshot.Interpolate;
 
         // used only in onlySendOnMove mode
-        private Vector3 originalPosition;
         private Vector3 lastPosition;
         private bool hasSentUnchangedPosition;
 
@@ -135,17 +134,6 @@ namespace VNT
         public bool showGizmos;
         public bool showOverlay;
         public Color overlayColor = new Color(0, 0, 0, 0.5f);
-
-        // Get starting positions
-        public override void OnStartClient()
-        {
-            originalPosition = this.transform.position;
-        }
-
-        public override void OnStartServer()
-        {
-            originalPosition = this.transform.position;
-        }    
 
         // snapshot functions //////////////////////////////////////////////////
         // construct a snapshot of the current state
@@ -170,7 +158,7 @@ namespace VNT
         {
             SyncData syncData = new SyncData(
                 syncPosition ? targetComponent.localPosition : new Vector3?(),
-                syncRotation? targetComponent.localRotation : new Quaternion?(),
+                syncRotation ? targetComponent.localRotation : new Quaternion?(),
                 syncScale ? targetComponent.localScale : new Vector3?()         
             );
 
@@ -229,7 +217,7 @@ namespace VNT
         // cmd /////////////////////////////////////////////////////////////////
         // only unreliable. see comment above of this file.
         [Command(channel = Channels.Unreliable)]
-        public void CmdClientToServerSync(ArraySegment<byte> payload)
+        public virtual void CmdClientToServerSync(ArraySegment<byte> payload)
         { 
             OnClientToServerSync(payload);
             //Immediately pass the sync on to other clients.
@@ -291,7 +279,7 @@ namespace VNT
         // rpc /////////////////////////////////////////////////////////////////
         // only unreliable. see comment above of this file.
         [ClientRpc(channel = Channels.Unreliable)] //Should this go exclude owner?
-        public void RpcServerToClientSync(ArraySegment<byte> payload)
+        public virtual void RpcServerToClientSync(ArraySegment<byte> payload)
         {
             OnServerToClientSync(payload);
         }
@@ -389,10 +377,9 @@ namespace VNT
 
                 if(this.transform.position == lastPosition && hasSentUnchangedPosition && onlySendOnMove) { return; }
 
-                // send snapshot without timestamp.
+                // send sync data without timestamp.
                 // receiver gets it from batch timestamp to save bandwidth.
-                NTSnapshot snapshot = ConstructSnapshot();
-
+                
                 RpcServerToClientSync(ConstructSyncData());
 
                 lastServerSendTime = NetworkTime.localTime;
@@ -461,9 +448,8 @@ namespace VNT
                 // received successfully.
                 if (NetworkTime.localTime >= lastClientSendTime + sendInterval)
                 {
-                    // send snapshot without timestamp.
-                    // receiver gets it from batch timestamp to save bandwidth.
-                    NTSnapshot snapshot = ConstructSnapshot();                   
+                    // send sync data without timestamp.
+                    // receiver gets it from batch timestamp to save bandwidth.                 
 
                     CmdClientToServerSync(ConstructSyncData());
 
