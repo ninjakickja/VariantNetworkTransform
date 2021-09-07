@@ -63,8 +63,8 @@ namespace VNT
         // scale sync is rare. off by default.
         public bool syncScale = false;
 
-        double lastClientSendTime;
-        double lastServerSendTime;
+        protected double lastClientSendTime;
+        protected double lastServerSendTime;
 
         // not all games need to interpolate. a board game might jump to the
         // final position immediately.
@@ -127,14 +127,14 @@ namespace VNT
         // absolute interpolation time, moved along with deltaTime
         // (roughly between [0, delta] where delta is snapshot B - A timestamp)
         // (can be bigger than delta when overshooting)
-        double serverInterpolationTime;
-        double clientInterpolationTime;
+        protected double serverInterpolationTime;
+        protected double clientInterpolationTime;
 
-        Func<NTSnapshot, NTSnapshot, double, NTSnapshot> Interpolate = NTSnapshot.Interpolate;
+        protected Func<NTSnapshot, NTSnapshot, double, NTSnapshot> Interpolate = NTSnapshot.Interpolate;
 
         // used only in onlySendOnMove mode
-        private Vector3 lastPosition;
-        private bool hasSentUnchangedPosition;
+        protected Vector3 lastPosition;
+        protected bool hasSentUnchangedPosition;
 
         [Header("Debug")]
         public bool showGizmos;
