@@ -6,6 +6,12 @@ using System;
 
 namespace VNT
 {
+    // VariantNetworkTransform v1.1
+    // ChangeLog:
+    // 1. Removed static network writer and use Mirror's pool networkwriter instead.
+    // 2. Changed ConstructSyncData() to be void, and REQUIRES the method to call
+    //    SerializeAndSend<T>(T, bool) within, to send the syncdata across network.
+    
     // VariantNetworkTransform v1.0
     // This is built upon NetworkTransform V2 by vis2k, not from scratch!
     // Changes and additions made to NT2:
@@ -152,9 +158,26 @@ namespace VNT
             );
         }
 
+
+        protected virtual void SerializeAndSend<T>(T syncData, bool fromServer)
+        {
+            using (PooledNetworkWriter writer = NetworkWriterPool.GetWriter())
+            {
+                writer.Write<T>(syncData);
+                if(fromServer)
+                {
+                    RpcServerToClientSync(writer.ToArraySegment());
+                }
+                else
+                {
+                    CmdClientToServerSync(writer.ToArraySegment());
+                }
+            }
+        }
+
         //Create data to send. This can be overriden and changing SyncData in 
         //case there is a different implementation like compression, etc. 
-        protected virtual ArraySegment<byte> ConstructSyncData()
+        protected virtual void ConstructSyncData(bool fromServer)
         {
             SyncData syncData = new SyncData(
                 syncPosition ? targetComponent.localPosition : new Vector3?(),
@@ -162,11 +185,7 @@ namespace VNT
                 syncScale ? targetComponent.localScale : new Vector3?()         
             );
 
-            using (VNTStaticWriter writer = VNTWriter.GetWriter())
-            {
-                writer.Write<SyncData>(syncData);
-                return writer.ToArraySegment();
-            }
+            SerializeAndSend<SyncData>(syncData, fromServer);
         }
 
         //This is to extract position/rotation/scale data from payload. Override
@@ -344,7 +363,7 @@ namespace VNT
         }
 
         // update //////////////////////////////////////////////////////////////
-        public virtual void UpdateServer()
+        public virtual void UpdateServer() 
         {
             // broadcast to all clients each 'sendInterval'
             // (client with authority will drop the rpc)
@@ -379,9 +398,9 @@ namespace VNT
 
                 // send sync data without timestamp.
                 // receiver gets it from batch timestamp to save bandwidth.
-                
-                RpcServerToClientSync(ConstructSyncData());
 
+               ConstructSyncData(true);
+                
                 lastServerSendTime = NetworkTime.localTime;
 
                 if(this.transform.position == lastPosition)
@@ -418,7 +437,7 @@ namespace VNT
             }
         }
 
-        public virtual void UpdateClient()
+        public virtual void UpdateClient() 
         {
             // client authority, and local player (= allowed to move myself)?
             if (IsClientWithAuthority)
@@ -451,7 +470,7 @@ namespace VNT
                     // send sync data without timestamp.
                     // receiver gets it from batch timestamp to save bandwidth.                 
 
-                    CmdClientToServerSync(ConstructSyncData());
+                    ConstructSyncData(false);
 
                     lastClientSendTime = NetworkTime.localTime;
                     
@@ -485,7 +504,7 @@ namespace VNT
             }
         }
 
-        void Update()
+        void Update() 
         {
             // if server then always sync to others.
             if (isServer) UpdateServer();
