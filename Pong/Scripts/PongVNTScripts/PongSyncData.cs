@@ -4,7 +4,7 @@ using UnityEngine;
 using System;
 using Mirror;
 
-namespace VNT 
+namespace VNT.PongExample 
 {
     //In the Pong game we only need to sync position of the ball,
     //and only y value of the racket position.

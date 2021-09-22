@@ -16,6 +16,6 @@ public class Player : NetworkBehaviour
         if (isLocalPlayer)
 
             rigidbody2d.velocity = new Vector2(0, Input.GetAxisRaw("Vertical")) * speed * Time.fixedDeltaTime;
-            Physics2D.Simulate(Time.fixedDeltaTime);
+            //Physics2D.Simulate(Time.fixedDeltaTime);
     }
 }

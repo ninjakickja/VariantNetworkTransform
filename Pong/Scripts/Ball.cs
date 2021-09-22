@@ -11,7 +11,7 @@ public class Ball : NetworkBehaviour
         base.OnStartServer();
 
         // only simulate ball physics on server
-        //rigidbody2d.simulated = true;
+        rigidbody2d.simulated = true;
 
         // Serve the ball from left player
         rigidbody2d.velocity = Vector2.right * speed;

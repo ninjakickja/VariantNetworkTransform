@@ -9,5 +9,6 @@ public class VariantNetworkTransform : VariantNetworkTransformBase
     [Tooltip("Set target transform to sync. Defaults to this object if null. Script must be on parent object.")]
     public Transform target;
     protected override Transform targetComponent => target == null? this.transform : target;
+
     
 }

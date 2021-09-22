@@ -6,6 +6,7 @@ using Mirror;
 
 namespace VNT 
 {
+    public interface VNTSyncData { }
     //SyncData is the struct used to construct a payload to send to server/clients
     //for use with the NetworkTransform. You can amend this to suit your needs for eg
     //if you are only using delta, or some form of compression, and your payload can be
@@ -14,7 +15,7 @@ namespace VNT
     //populate payload or retrieve position/rotation/scale data from payload.
     //Feel free to add new data types but remember to include custom reader/writer classes.
     [Serializable]
-    public struct SyncData
+    public struct SyncData : VNTSyncData
     {
         public Vector3? position;
         public Quaternion? rotation;

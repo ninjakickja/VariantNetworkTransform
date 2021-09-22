@@ -6,6 +6,19 @@ using System;
 
 namespace VNT
 {
+    // VariantNetworkTransform v1.2
+    // ChangeLog:
+    // 1. Split UpdateServer() and UpdaterClient() to 2 functions each:
+    //    a. Sync and send data
+    //    b. Render
+    // 2. Added option Manual Trigger Send. If true, objects will NOT send sync data
+    //    by itself. Useful if you want to trigger sending by another method or have a
+    //    specific start time, or maybe after X ticks instead of time interval.
+    // 3. Added option Sync Send Interval. If true object will add itself to static list
+    //    and on each update only the send interval 1st object on the list will be considered,
+    //    and triggered on all objects on that list.
+    // 4. Changed buffer multiplier to float, allowing for more sensitive adjustment.
+
     // VariantNetworkTransform v1.1
     // ChangeLog:
     // 1. Removed static network writer and use Mirror's pool networkwriter instead.
@@ -51,12 +64,19 @@ namespace VNT
 
         // Is this a client with authority over this transform?
         // This component could be on the player object or any object that has been assigned authority to this client.
-        bool IsClientWithAuthority => hasAuthority && clientAuthority;
+        protected bool IsClientWithAuthority => hasAuthority && clientAuthority;
 
         // target transform to sync. can be on a child.
         protected abstract Transform targetComponent { get; }
 
         [Header("Synchronization")]
+        [Tooltip("Set to true if you do NOT want to send sync data automatically")]
+        public bool manualTriggerSend = false;
+        [Tooltip("Set to true to make snapshots for these objects be sent at the same time")]        
+        public bool syncSendInterval = true;
+        public static readonly List<VariantNetworkTransformBase> vntObjects = new List<VariantNetworkTransformBase>();
+        public int vntIndex = -1; // WIP - used to identify each NT script on particular GameObject.
+
         [Range(0, 1)] public float sendInterval = 0.050f;
         public bool syncPosition = true;
         public bool syncRotation = true;
@@ -71,7 +91,7 @@ namespace VNT
         [Header("Interpolation")]
         public bool interpolatePosition = true;
         public bool interpolateRotation = true;
-        public bool interpolateScale = true;
+        public bool interpolateScale = false;
 
         // "Experimentally I’ve found that the amount of delay that works best
         //  at 2-5% packet loss is 3X the packet send rate"
@@ -83,7 +103,7 @@ namespace VNT
         //       (a player with 2000ms latency will have issues no matter what)
         [Header("Buffering")]
         [Tooltip("Snapshots are buffered for sendInterval * multiplier seconds. At 2-5% packet loss, 3x supposedly works best.")]
-        public int bufferTimeMultiplier = 1;
+        public float bufferTimeMultiplier = 1;
         public float bufferTime => sendInterval * bufferTimeMultiplier;
         [Tooltip("Buffer size limit to avoid ever growing list memory consumption attacks.")]
         public int bufferSizeLimit = 64;
@@ -93,7 +113,7 @@ namespace VNT
 
         [Tooltip("Once buffer is larger catchupThreshold, accelerate by multiplier % per excess entry.")]
         [Range(0, 1)] public float catchupMultiplier = 0.10f;
-
+        
         //Adding option to allow for not sending when object is not moving.
         //This is to save bandwidth but may complicate matters if consistent
         //tick based movement/snapshots are required for client side prediction
@@ -109,7 +129,7 @@ namespace VNT
         [Tooltip("When true, data is not sent when object does not move, refer to internal comments.")]
         public bool onlySendOnMove = false;
         [Tooltip("How much time, as a multiple of send interval, has passed before clearing buffers.")]
-        public int timeMultiplierToResetBuffers = 3;
+        public float timeMultiplierToResetBuffers = 3;
 
         // snapshots sorted by timestamp
         // in the original article, glenn fiedler drops any snapshots older than
@@ -158,13 +178,15 @@ namespace VNT
             );
         }
 
-
+        // Serialize sync data struct and send to server or client.
+        // IMPORTANT: Call this function within ConstructSyncData() when
+        // overriding and pass the data struct as parameter.
         protected virtual void SerializeAndSend<T>(T syncData, bool fromServer)
         {
             using (PooledNetworkWriter writer = NetworkWriterPool.GetWriter())
             {
                 writer.Write<T>(syncData);
-                if(fromServer)
+                if (fromServer)
                 {
                     RpcServerToClientSync(writer.ToArraySegment());
                 }
@@ -175,8 +197,9 @@ namespace VNT
             }
         }
 
-        //Create data to send. This can be overriden and changing SyncData in 
-        //case there is a different implementation like compression, etc. 
+        // Create data to send. This can be overriden and changing SyncData in 
+        // case there is a different implementation like compression, etc. 
+        // REMEMBER: SerializeAndSend() must be called within the override.
         protected virtual void ConstructSyncData(bool fromServer)
         {
             SyncData syncData = new SyncData(
@@ -188,10 +211,10 @@ namespace VNT
             SerializeAndSend<SyncData>(syncData, fromServer);
         }
 
-        //This is to extract position/rotation/scale data from payload. Override
-        //Construct and Deconstruct if you are implementing a different SyncData logic.
-        //Note however that snapshot interpolation still requires the basic 3 data
-        //position, rotation and scale, which are computed from here.   
+        // This is to extract position/rotation/scale data from payload. Override
+        // Construct and Deconstruct if you are implementing a different SyncData logic.
+        // Note however that snapshot interpolation still requires the basic 3 data
+        // position, rotation and scale, which are computed from here.   
         protected virtual void DeconstructSyncData(ArraySegment<byte> receivedPayload, out Vector3? position, out Quaternion? rotation, out Vector3? scale)
         {
             using (PooledNetworkReader reader = NetworkReaderPool.GetReader(receivedPayload))
@@ -202,6 +225,7 @@ namespace VNT
                 scale = syncData.scale;
             }
         }
+
 
         // apply a snapshot to the Transform.
         // -> start, end, interpolated are all passed in caes they are needed
@@ -237,10 +261,10 @@ namespace VNT
         // only unreliable. see comment above of this file.
         [Command(channel = Channels.Unreliable)]
         public virtual void CmdClientToServerSync(ArraySegment<byte> payload)
-        { 
+        {
             OnClientToServerSync(payload);
             //Immediately pass the sync on to other clients.
-            if(clientAuthority)
+            if (clientAuthority)
             {
                 RpcServerToClientSync(payload);
             }
@@ -269,7 +293,7 @@ namespace VNT
                 }                
             }
 
-            DeconstructSyncData(receivedPayload, out Vector3? position, out Quaternion? rotation, out Vector3? scale );
+            DeconstructSyncData(receivedPayload, out Vector3? position, out Quaternion? rotation, out Vector3? scale);
 
             // position, rotation, scale can have no value if same as last time.
             // saves bandwidth.
@@ -336,7 +360,7 @@ namespace VNT
                 }
             }
 
-            DeconstructSyncData(receivedPayload, out Vector3? position, out Quaternion? rotation, out Vector3? scale );        
+            DeconstructSyncData(receivedPayload, out Vector3? position, out Quaternion? rotation, out Vector3? scale);        
             //? if batching has more than 1 message, does the remoteTimeStamp get a mistake?
             // position, rotation, scale can have no value if same as last time.
             // saves bandwidth.
@@ -360,6 +384,126 @@ namespace VNT
 
             // add to buffer (or drop if older than first element)
             SnapshotInterpolation.InsertIfNewEnough(snapshot, clientBuffer);
+        }
+
+        // NT basically does 2 functions every update:
+        // 1) Check interval and send data every interval
+        // 2) Render data
+        protected virtual void ServerSendSyncData()
+        {
+            //We want to send once more even if position hasn't change from last interval.
+            //We do that and toggle the bool hasSentUnchangedPosition. This is so receiver has 
+            //2 copies of the same position snapshot in their buffers. 
+            //This ensures there is an extra (snapshot 3) snapshot that is identical to the previous one (2)
+            //and thus force snapshot-interpolation to at least interpolate till the end of snapshot 2.
+
+            if (this.transform.position == lastPosition && hasSentUnchangedPosition && onlySendOnMove) { return; }
+
+            // send sync data without timestamp.
+            // receiver gets it from batch timestamp to save bandwidth.
+
+            ConstructSyncData(true);
+            
+            lastServerSendTime = NetworkTime.localTime;
+
+            if (this.transform.position == lastPosition)
+            {
+                hasSentUnchangedPosition = true;
+            } 
+            else
+            {
+                hasSentUnchangedPosition = false;
+                lastPosition = this.transform.position;
+            }
+        }
+
+        protected virtual void ServerRenderData()
+        {
+            // compute snapshot interpolation & apply if any was spit out
+            // TODO we don't have Time.deltaTime double yet. float is fine.
+            if (SnapshotInterpolation.Compute(
+                NetworkTime.localTime, Time.deltaTime,
+                ref serverInterpolationTime,
+                bufferTime, serverBuffer,
+                catchupThreshold, catchupMultiplier,
+                Interpolate,
+                out NTSnapshot computed))
+            {
+                NTSnapshot start = serverBuffer.Values[0];
+                NTSnapshot goal = serverBuffer.Values[1];
+                ApplySnapshot(start, goal, (NTSnapshot)computed);
+            }   
+        }
+
+        // If syncSendInterval is true, we call this method during update on the script
+        // that is the first on the list of objects to sync to ensure it is only called once.
+        // This loops through every object on the list to send sync data, ensuring they are
+        // all called at once.
+        public virtual void ServerSendSyncDataAll()
+        {
+            for (int i = 0, length = vntObjects.Count; i < length; i++)
+            {
+                if ((!vntObjects[i].clientAuthority || vntObjects[i].IsClientWithAuthority))
+                {
+                    vntObjects[i].ServerSendSyncData();
+                }
+            }
+        }
+
+        // CLIENT functions:
+        // Again, update is split into 2, sending sync data and rendering.
+        protected virtual void ClientSendSyncData()
+        {
+            // send sync data without timestamp.
+            // receiver gets it from batch timestamp to save bandwidth.                 
+            if (this.transform.position == lastPosition && hasSentUnchangedPosition && onlySendOnMove) { return; }  
+
+            ConstructSyncData(false);
+
+            lastClientSendTime = NetworkTime.localTime;
+            
+            if (this.transform.position == lastPosition)
+            {
+                hasSentUnchangedPosition = true;
+            }
+            else
+            {
+                hasSentUnchangedPosition = false;
+                lastPosition = this.transform.position;
+            }  
+        }
+
+        protected virtual void ClientRenderData()
+        {
+            // compute snapshot interpolation & apply if any was spit out
+            // TODO we don't have Time.deltaTime double yet. float is fine.
+            if (SnapshotInterpolation.Compute(
+                NetworkTime.localTime, Time.deltaTime,
+                ref clientInterpolationTime,
+                bufferTime, clientBuffer,
+                catchupThreshold, catchupMultiplier,
+                Interpolate,
+                out NTSnapshot computed))
+            {
+                NTSnapshot start = clientBuffer.Values[0];
+                NTSnapshot goal = clientBuffer.Values[1];
+                ApplySnapshot(start, goal, (NTSnapshot)computed); // Any reason why start is needed?
+            }
+        }
+
+        // If syncSendInterval is true, we call this method during update on the script
+        // that is the first on the list of objects to sync to ensure it is only called once.
+        // This loops through every object on the list to send sync data, ensuring they are
+        // all called at once.
+        public virtual void ClientSendSyncDataAll()
+        {
+            for (int i = 0, length = vntObjects.Count; i < length; i++)
+            {
+                if (vntObjects[i].IsClientWithAuthority)
+                {
+                    vntObjects[i].ClientSendSyncData();
+                }
+            }            
         }
 
         // update //////////////////////////////////////////////////////////////
@@ -386,32 +530,26 @@ namespace VNT
             // DO NOT send nulls if not changed 'since last send' either. we
             // send unreliable and don't know which 'last send' the other end
             // received successfully.
-            if (NetworkTime.localTime >= lastServerSendTime + sendInterval && (!clientAuthority || IsClientWithAuthority)) // Server sends stuff with server Authority or Host objects with clientAuthority
+
+            if (!manualTriggerSend)
             {
-                //We want to send once more even if position hasn't change from last interval.
-                //We do that and toggle the bool hasSentUnchangedPosition. This is so receiver has 
-                //2 copies of the same position snapshot in their buffers. 
-                //This ensures there is an extra (snapshot 3) snapshot that is identical to the previous one (2)
-                //and thus force snapshot-interpolation to at least interpolate till the end of snapshot 2.
-
-                if(this.transform.position == lastPosition && hasSentUnchangedPosition && onlySendOnMove) { return; }
-
-                // send sync data without timestamp.
-                // receiver gets it from batch timestamp to save bandwidth.
-
-               ConstructSyncData(true);
-                
-                lastServerSendTime = NetworkTime.localTime;
-
-                if(this.transform.position == lastPosition)
+                bool timeToSend = NetworkTime.localTime >= lastServerSendTime + sendInterval;
+            
+                if (!syncSendInterval)
                 {
-                    hasSentUnchangedPosition = true;
-                } else {
-                    hasSentUnchangedPosition = false;
-                    lastPosition = this.transform.position;
+                    if (timeToSend && (!clientAuthority || IsClientWithAuthority)) // Server sends stuff with server Authority or Host objects with clientAuthority
+                    {
+                        ServerSendSyncData();
+                    }
+                }
+                else
+                {
+                    if (vntObjects.Count > 0 && vntObjects[0] == this && timeToSend)   
+                    {
+                        ServerSendSyncDataAll();
+                    }
                 }
             }
-
             // apply buffered snapshots IF client authority
             // -> in server authority, server moves the object
             //    so no need to apply any snapshots there.
@@ -420,87 +558,61 @@ namespace VNT
             //    then we don't need to do anything.
             if (clientAuthority && !hasAuthority)  
             {
-                // compute snapshot interpolation & apply if any was spit out
-                // TODO we don't have Time.deltaTime double yet. float is fine.
-                if (SnapshotInterpolation.Compute(
-                    NetworkTime.localTime, Time.deltaTime,
-                    ref serverInterpolationTime,
-                    bufferTime, serverBuffer,
-                    catchupThreshold, catchupMultiplier,
-                    Interpolate,
-                    out NTSnapshot computed))
-                {
-                    NTSnapshot start = serverBuffer.Values[0];
-                    NTSnapshot goal = serverBuffer.Values[1];
-                    ApplySnapshot(start, goal, (NTSnapshot)computed);
-                }           
+                ServerRenderData();        
             }
         }
 
         public virtual void UpdateClient() 
         {
-            // client authority, and local player (= allowed to move myself)?
-            if (IsClientWithAuthority)
+            // See UpdateServer() comments
+        
+
+            // send to server each 'sendInterval'
+            // NetworkTime.localTime for double precision until Unity has it too
+            //
+            // IMPORTANT:
+            // snapshot interpolation requires constant sending.
+            // DO NOT only send if position changed. for example:
+            // ---
+            // * client sends first position at t=0
+            // * ... 10s later ...
+            // * client moves again, sends second position at t=10
+            // ---
+            // * server gets first position at t=0
+            // * server gets second position at t=10
+            // * server moves from first to second within a time of 10s
+            //   => would be a super slow move, instead of a wait & move.
+            //
+            // IMPORTANT:
+            // DO NOT send nulls if not changed 'since last send' either. we
+            // send unreliable and don't know which 'last send' the other end
+            // received successfully.
+            if (!manualTriggerSend)
             {
-                // See UpdateServer() comments
-                if(this.transform.position == lastPosition && hasSentUnchangedPosition && onlySendOnMove) { return; }            
-
-                // send to server each 'sendInterval'
-                // NetworkTime.localTime for double precision until Unity has it too
-                //
-                // IMPORTANT:
-                // snapshot interpolation requires constant sending.
-                // DO NOT only send if position changed. for example:
-                // ---
-                // * client sends first position at t=0
-                // * ... 10s later ...
-                // * client moves again, sends second position at t=10
-                // ---
-                // * server gets first position at t=0
-                // * server gets second position at t=10
-                // * server moves from first to second within a time of 10s
-                //   => would be a super slow move, instead of a wait & move.
-                //
-                // IMPORTANT:
-                // DO NOT send nulls if not changed 'since last send' either. we
-                // send unreliable and don't know which 'last send' the other end
-                // received successfully.
-                if (NetworkTime.localTime >= lastClientSendTime + sendInterval)
+                bool timeToSend = NetworkTime.localTime >= lastClientSendTime + sendInterval;
+            
+                if (!syncSendInterval)
                 {
-                    // send sync data without timestamp.
-                    // receiver gets it from batch timestamp to save bandwidth.                 
-
-                    ConstructSyncData(false);
-
-                    lastClientSendTime = NetworkTime.localTime;
-                    
-                    if(this.transform.position == lastPosition)
+                    if (timeToSend && IsClientWithAuthority)
                     {
-                        hasSentUnchangedPosition = true;
-                    } else {
-                        hasSentUnchangedPosition = false;
-                        lastPosition = this.transform.position;
-                    }                
+                        ClientSendSyncData();
+                    }
                 }
-            }
+                else
+                {
+                    if (vntObjects.Count > 0 && vntObjects[0] == this && timeToSend)   
+                    {
+                        ClientSendSyncDataAll();
+                    }
+                }
+            } 
+
+     
             // for all other clients (and for local player if !authority),
             // we need to apply snapshots from the buffer
-            else
+            if (!IsClientWithAuthority)
             {
-                // compute snapshot interpolation & apply if any was spit out
-                // TODO we don't have Time.deltaTime double yet. float is fine.
-                if (SnapshotInterpolation.Compute(
-                    NetworkTime.localTime, Time.deltaTime,
-                    ref clientInterpolationTime,
-                    bufferTime, clientBuffer,
-                    catchupThreshold, catchupMultiplier,
-                    Interpolate,
-                    out NTSnapshot computed))
-                {
-                    NTSnapshot start = clientBuffer.Values[0];
-                    NTSnapshot goal = clientBuffer.Values[1];
-                    ApplySnapshot(start, goal, (NTSnapshot)computed);
-                }
+                ClientRenderData();
             }
         }
 
@@ -579,18 +691,51 @@ namespace VNT
             clientInterpolationTime = 0;
         }
 
-        protected virtual void OnDisable() => Reset();
-        protected virtual void OnEnable() => Reset();
+        public void AddEntity(VariantNetworkTransformBase entity)
+        {
+            if (!vntObjects.Contains(entity))
+            {
+                vntObjects.Add(entity);
+            }
+        }
+
+        public void RemoveEntity(VariantNetworkTransformBase entity)
+        {
+            if (vntObjects.Contains(entity))
+            {
+                vntObjects.Remove(entity);
+            }
+        }
+
+        protected virtual void OnEnable() 
+        {
+            Reset();
+            vntIndex = Array.IndexOf(GetComponents(typeof(VariantNetworkTransformBase)), this);
+
+            if (syncSendInterval)    
+            {
+                AddEntity(this);
+            }
+        }
+
+        protected virtual void OnDisable()
+        {
+            Reset();
+            if (syncSendInterval)    
+            {
+                RemoveEntity(this);
+            }            
+        }
 
         protected virtual void OnValidate()
         {
             // make sure that catchup threshold is > buffer multiplier.
             // for a buffer multiplier of '3', we usually have at _least_ 3
             // buffered snapshots. often 4-5 even.
-            catchupThreshold = Mathf.Max(bufferTimeMultiplier + 3, catchupThreshold);
+            catchupThreshold = Mathf.Max(Mathf.CeilToInt(bufferTimeMultiplier) + 3, catchupThreshold);
 
             // buffer limit should be at least multiplier to have enough in there
-            bufferSizeLimit = Mathf.Max(bufferTimeMultiplier, bufferSizeLimit);
+            bufferSizeLimit = Mathf.Max(Mathf.CeilToInt(bufferTimeMultiplier), bufferSizeLimit);
         }
 
         // debug ///////////////////////////////////////////////////////////////
@@ -622,11 +767,11 @@ namespace VNT
                 // obvious if we accidentally populate both.
                 GUILayout.Label($"Server Buffer:{serverBuffer.Count}");
                 if (serverCatchup > 0)
-                    GUILayout.Label($"Server Catchup:{serverCatchup*100:F2}%");
+                    GUILayout.Label($"Server Catchup:{serverCatchup * 100:F2}%");
 
                 GUILayout.Label($"Client Buffer:{clientBuffer.Count}");
                 if (clientCatchup > 0)
-                    GUILayout.Label($"Client Catchup:{clientCatchup*100:F2}%");
+                    GUILayout.Label($"Client Catchup:{clientCatchup * 100:F2}%");
 
                 GUILayout.EndArea();
                 GUI.color = Color.white;
